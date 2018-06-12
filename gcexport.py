@@ -23,8 +23,9 @@ from math import floor
 from sets import Set
 from urllib import urlencode
 from datetime import datetime, timedelta, tzinfo
+from dateutil import tz
 from getpass import getpass
-from os import mkdir, remove, stat
+from os import mkdir, remove, stat, utime
 from os.path import isdir, isfile
 from xml.dom.minidom import parseString
 
@@ -294,6 +295,8 @@ def parse_arguments(argv):
         directory to export to (default: './YYYY-MM-DD_garmin_connect_export')")
     parser.add_argument('-u', '--unzip', help="if downloading ZIP files (format: 'original'), unzip \
         the file and removes the ZIP file", action="store_true")
+    parser.add_argument('-ot', '--originaltime', help="will set downloaded (and possibly unzipped) \
+        file time to the activity start time", action="store_true")
 
     return parser.parse_args(argv[1:])
 
@@ -497,6 +500,10 @@ def main(argv):
             type_id = 4 if absent_or_null('activityType', a) else a['activityType']['typeId']
 
             start_time_with_offset = offset_date_time(a['startTimeLocal'], a['startTimeGMT'])
+            if args.originaltime:
+                start_time_utc = datetime.strptime(a['startTimeGMT'], "%Y-%m-%d %H:%M:%S")
+                start_time_utc = start_time_utc.replace(tzinfo=tz.tzutc())
+                start_time_timestamp = int(start_time_utc.astimezone(tz.tzlocal()).strftime("%s"))
             elapsed_duration = details['summaryDTO']['elapsedDuration'] if 'summaryDTO' in details and 'elapsedDuration' in details['summaryDTO'] else None
             duration = elapsed_duration if elapsed_duration else a['duration']
             duration_seconds = int(round(duration))
@@ -580,7 +587,7 @@ def main(argv):
 
             csv_file.write(csv_record.encode('utf8'))
 
-            export_data_file(str(a['activityId']), activity_details, args)
+            export_data_file(str(a['activityId']), activity_details, start_time_timestamp, args)
 
         total_downloaded += num_to_download
     # End while loop for multiple chunks.
@@ -595,7 +602,7 @@ def main(argv):
     print('Done!')
 
 
-def export_data_file(activity_id, activity_details, args):
+def export_data_file(activity_id, activity_details, start_time, args):
     if args.format == 'gpx':
         data_filename = args.directory + '/activity_' + activity_id + '.gpx'
         download_url = URL_GC_GPX_ACTIVITY + activity_id + '?full=true'
@@ -658,6 +665,8 @@ def export_data_file(activity_id, activity_details, args):
 
     # Persist file
     write_to_file(data_filename, data, file_mode)
+    if args.originaltime:
+        utime(data_filename, (start_time, start_time))
     if args.format == 'gpx' and data:
         # Validate GPX data. If we have an activity without GPS data (e.g., running on a
         # treadmill). Garmin Connect still kicks out a GPX (sometimes), but there is only activity
@@ -680,6 +689,8 @@ def export_data_file(activity_id, activity_details, args):
                 z = zipfile.ZipFile(zip_file)
                 for name in z.namelist():
                     z.extract(name, args.directory)
+                    if args.originaltime:
+                        utime(args.directory + "/" + name, (start_time, start_time))
                 zip_file.close()
             else:
                 print('Skipping 0Kb zip file.')
